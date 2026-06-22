@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+openai
+mem0ai
+httpx
+python-dotenv
