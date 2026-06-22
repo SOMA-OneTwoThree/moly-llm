@@ -3,13 +3,19 @@ import json
 import unittest
 from unittest.mock import patch
 
+from app.chat.prompt_builder import PromptBuilder
 from app.main import app
+from app.schemas.chat import ChatMessage
 
 
 class FakeLLMProvider:
     model = "test-model"
 
+    def __init__(self):
+        self.messages = []
+
     async def stream_chat(self, messages):
+        self.messages = messages
         yield "안녕하세요. "
         yield "저는 Moly예요."
 
@@ -71,7 +77,9 @@ async def post_chat() -> tuple[dict[str, str], str]:
 
 class ChatSseTests(unittest.TestCase):
     def test_chat_streams_llm_sse_events(self):
-        with patch("app.api.chat.create_llm_provider", return_value=FakeLLMProvider()):
+        fake_llm_provider = FakeLLMProvider()
+
+        with patch("app.api.chat.create_llm_provider", return_value=fake_llm_provider):
             headers, body = asyncio.run(post_chat())
 
         self.assertEqual(headers["content-type"], "text/event-stream")
@@ -80,4 +88,32 @@ class ChatSseTests(unittest.TestCase):
         self.assertIn(
             'data: {"type":"done","reply":"안녕하세요. 저는 Moly예요.","usage":{"model":"test-model"}}\n\n',
             body,
+        )
+        self.assertEqual(fake_llm_provider.messages[0]["role"], "system")
+        self.assertEqual(fake_llm_provider.messages[1]["role"], "user")
+
+
+class PromptBuilderTests(unittest.TestCase):
+    def test_build_returns_system_memory_and_recent_messages(self):
+        builder = PromptBuilder(system_prompt="You are Molly.")
+
+        messages = builder.build(
+            messages=[
+                ChatMessage(role="user", content="hello"),
+                ChatMessage(role="assistant", content="hi"),
+            ],
+            memory="User likes concise answers.",
+        )
+
+        self.assertEqual(
+            messages,
+            [
+                {"role": "system", "content": "You are Molly."},
+                {
+                    "role": "system",
+                    "content": "Relevant user memory:\nUser likes concise answers.",
+                },
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "hi"},
+            ],
         )

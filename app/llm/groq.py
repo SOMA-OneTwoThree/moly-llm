@@ -2,8 +2,7 @@ from collections.abc import AsyncIterator
 
 from openai import AsyncOpenAI
 
-from app.llm.base import StreamingLLMProvider
-from app.schemas.chat import ChatMessage
+from app.llm.base import LLMMessage, StreamingLLMProvider
 
 
 class GroqStreamingLLMProvider(StreamingLLMProvider):
@@ -13,13 +12,10 @@ class GroqStreamingLLMProvider(StreamingLLMProvider):
         self.model = model
         self.client = AsyncOpenAI(api_key=api_key, base_url=self.BASE_URL)
 
-    async def stream_chat(self, messages: list[ChatMessage]) -> AsyncIterator[str]:
+    async def stream_chat(self, messages: list[LLMMessage]) -> AsyncIterator[str]:
         stream = await self.client.chat.completions.create(
             model=self.model,
-            messages=[
-                {"role": message.role, "content": message.content}
-                for message in messages
-            ],
+            messages=messages,
             stream=True,
         )
 

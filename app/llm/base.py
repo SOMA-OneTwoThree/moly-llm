@@ -1,11 +1,14 @@
 from collections.abc import AsyncIterator
-from typing import Protocol
+from typing import Literal, Protocol, TypedDict
 
-from app.schemas.chat import ChatMessage
+
+class LLMMessage(TypedDict):
+    role: Literal["system", "user", "assistant"]
+    content: str
 
 
 class StreamingLLMProvider(Protocol):
     model: str
 
-    def stream_chat(self, messages: list[ChatMessage]) -> AsyncIterator[str]:
+    def stream_chat(self, messages: list[LLMMessage]) -> AsyncIterator[str]:
         pass
