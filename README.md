@@ -73,6 +73,6 @@ app/
 
 ```bash
 uv sync
-uv uvicorn app.main:app --reload --port 8000
+uv run uvicorn app.main:app --reload --port 8000
 curl localhost:8000/health
 ```
