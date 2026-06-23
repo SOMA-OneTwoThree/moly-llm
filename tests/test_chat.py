@@ -37,11 +37,23 @@ class FakeMemoryStore:
 
 
 class FakeMemoryService:
+    def __init__(self):
+        self.remember_calls = []
+
     async def search(self, user_id, query):
         return [Memory(content="User likes concise answers.")]
 
     async def remember_from_conversation(self, user_id, messages, assistant_reply):
+        self.remember_calls.append((user_id, messages, assistant_reply))
         return None
+
+
+class FakeBackgroundTasks:
+    def __init__(self):
+        self.tasks = []
+
+    def add_task(self, func, *args, **kwargs):
+        self.tasks.append((func, args, kwargs))
 
 
 class FakeMem0Client:
@@ -159,6 +171,93 @@ class ChatSseTests(unittest.TestCase):
             },
         )
         self.assertEqual(fake_llm_provider.messages[2]["role"], "user")
+
+    def test_chat_service_saves_memory_every_n_user_turns(self):
+        fake_llm_provider = FakeLLMProvider()
+        fake_memory_service = FakeMemoryService()
+        background_tasks = FakeBackgroundTasks()
+        service = ChatService(
+            llm_provider=fake_llm_provider,
+            memory_service=fake_memory_service,
+            prompt_builder=PromptBuilder(system_prompt="You are Molly."),
+            memory_save_every_n_turns=2,
+        )
+        request = ChatRequest(
+            user_id="user-1",
+            messages=[
+                ChatMessage(role="user", content="hello"),
+                ChatMessage(role="assistant", content="hi"),
+                ChatMessage(role="user", content="remember this"),
+            ],
+        )
+
+        asyncio.run(collect_stream(service.stream_chat(request, background_tasks)))
+
+        self.assertEqual(len(background_tasks.tasks), 1)
+        _, _, kwargs = background_tasks.tasks[0]
+        self.assertEqual(kwargs["user_id"], "user-1")
+        self.assertEqual(
+            kwargs["messages"],
+            [
+                ChatMessage(role="user", content="hello"),
+                ChatMessage(role="assistant", content="hi"),
+                ChatMessage(role="user", content="remember this"),
+            ],
+        )
+        self.assertEqual(kwargs["assistant_reply"], "안녕하세요. 저는 Moly예요.")
+
+    def test_chat_service_skips_memory_save_between_intervals(self):
+        fake_llm_provider = FakeLLMProvider()
+        fake_memory_service = FakeMemoryService()
+        background_tasks = FakeBackgroundTasks()
+        service = ChatService(
+            llm_provider=fake_llm_provider,
+            memory_service=fake_memory_service,
+            prompt_builder=PromptBuilder(system_prompt="You are Molly."),
+            memory_save_every_n_turns=2,
+        )
+        request = ChatRequest(
+            user_id="user-1",
+            messages=[ChatMessage(role="user", content="hello")],
+        )
+
+        asyncio.run(collect_stream(service.stream_chat(request, background_tasks)))
+
+        self.assertEqual(background_tasks.tasks, [])
+
+    def test_chat_service_saves_only_recent_n_user_turns(self):
+        fake_llm_provider = FakeLLMProvider()
+        background_tasks = FakeBackgroundTasks()
+        service = ChatService(
+            llm_provider=fake_llm_provider,
+            memory_service=FakeMemoryService(),
+            prompt_builder=PromptBuilder(system_prompt="You are Molly."),
+            memory_save_every_n_turns=2,
+        )
+        request = ChatRequest(
+            user_id="user-1",
+            messages=[
+                ChatMessage(role="user", content="old user"),
+                ChatMessage(role="assistant", content="old assistant"),
+                ChatMessage(role="user", content="new user"),
+                ChatMessage(role="assistant", content="new assistant"),
+                ChatMessage(role="user", content="latest user"),
+                ChatMessage(role="assistant", content="latest assistant"),
+                ChatMessage(role="user", content="final user"),
+            ],
+        )
+
+        asyncio.run(collect_stream(service.stream_chat(request, background_tasks)))
+
+        _, _, kwargs = background_tasks.tasks[0]
+        self.assertEqual(
+            kwargs["messages"],
+            [
+                ChatMessage(role="user", content="latest user"),
+                ChatMessage(role="assistant", content="latest assistant"),
+                ChatMessage(role="user", content="final user"),
+            ],
+        )
 
 
 class MemoryServiceTests(unittest.TestCase):

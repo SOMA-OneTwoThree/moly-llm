@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     llm_model: str = "llama-3.3-70b-versatile"
     memory_top_k: int = 5
     memory_cache_ttl_seconds: int = 300
+    memory_save_every_n_turns: int = 5
     supabase_db_connection_string: str = ""
     openai_api_key: str = ""
     embedder_model: str = "text-embedding-3-small"
