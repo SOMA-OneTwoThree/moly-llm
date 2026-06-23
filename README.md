@@ -33,12 +33,11 @@ data: {"type":"error","code":"...","message":"..."}
 
 ## Tech Stack
 
+- Python 3.12
 - FastAPI
 - Pydantic
-- Groq Llama-3.3-70b
 - Mem0 SDK
-- Supabase Postgres/pgvector for memory storage
-- SSE for streaming `/chat`
+- Supabase Postgres/pgvector via vecs for memory storage
 
 ## Folder Structure
 
@@ -63,16 +62,45 @@ app/
   memory/
     service.py
     mem0_client.py
+    mem0_store.py
+    cache.py
+    models.py
     formatter.py
-  observability/
-    logger.py
-    metrics.py
 ```
 
-## Run
+## Run With Docker
+
+Build the image:
 
 ```bash
-uv sync
-uv run uvicorn app.main:app --reload --port 8000
-curl localhost:8000/health
+docker build -t moly-llm:local .
+```
+
+Run the container:
+
+```bash
+docker run -d \
+  --name moly-llm \
+  -p 8000:8000 \
+  --env-file .env \
+  moly-llm:local
+```
+
+Check health:
+
+```bash
+curl http://127.0.0.1:8000/health
+```
+
+View logs:
+
+```bash
+docker logs -f moly-llm
+```
+
+Stop and remove the container:
+
+```bash
+docker stop moly-llm
+docker rm moly-llm
 ```

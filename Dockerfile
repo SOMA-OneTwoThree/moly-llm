@@ -2,11 +2,15 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir uv
 
-COPY . .
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
+
+COPY app ./app
 
 EXPOSE 8000
-# 컨테이너(항상 켜짐). SSE 스트리밍 OK.
+ENV MEM0_DIR=/app/.mem0
+ENV PATH="/app/.venv/bin:$PATH"
+
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
