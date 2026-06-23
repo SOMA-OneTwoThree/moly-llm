@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from app.chat.service import ChatService
 from app.chat.prompt_builder import PromptBuilder
+from app.config import settings
 from app.main import app
 from app.memory.mem0_store import Mem0MemoryStore, memory_from_result
 from app.memory.models import Memory
@@ -266,7 +267,10 @@ class MemoryServiceTests(unittest.TestCase):
             MemoryService()
 
     def test_create_memory_store_requires_supabase(self):
-        with self.assertRaisesRegex(ValueError, "SUPABASE_DB_CONNECTION_STRING"):
+        with (
+            patch.object(settings, "supabase_db_connection_string", ""),
+            self.assertRaisesRegex(ValueError, "SUPABASE_DB_CONNECTION_STRING"),
+        ):
             create_memory_store()
 
     def test_search_uses_cache(self):
