@@ -3,7 +3,7 @@ from typing import Protocol
 
 from app.config import settings
 from app.memory.cache import MemoryCache
-from app.memory.models import Memory, MemoryWrite
+from app.memory.models import Memory
 from app.schemas.chat import ChatMessage
 
 
@@ -11,16 +11,13 @@ class MemoryStore(Protocol):
     async def search(self, user_id: str, query: str, limit: int) -> list[Memory]:
         ...
 
-    async def save(self, user_id: str, memories: list[MemoryWrite]) -> None:
+    async def save_conversation(
+        self,
+        user_id: str,
+        messages: list[ChatMessage],
+        assistant_reply: str,
+    ) -> None:
         ...
-
-
-class NoopMemoryStore(MemoryStore):
-    async def search(self, user_id: str, query: str, limit: int) -> list[Memory]:
-        return []
-
-    async def save(self, user_id: str, memories: list[MemoryWrite]) -> None:
-        return None
 
 
 class MemoryService:
@@ -30,7 +27,10 @@ class MemoryService:
         top_k: int = settings.memory_top_k,
         cache_ttl_seconds: int = settings.memory_cache_ttl_seconds,
     ) -> None:
-        self.store = store or NoopMemoryStore()
+        if store is None:
+            raise ValueError("MemoryService requires a MemoryStore.")
+
+        self.store = store
         self.top_k = top_k
         self.cache = MemoryCache(ttl_seconds=cache_ttl_seconds)
 
@@ -49,18 +49,29 @@ class MemoryService:
         messages: list[ChatMessage],
         assistant_reply: str,
     ) -> None:
-        memories = await self.extract_memories(messages, assistant_reply)
-        if memories:
-            await self.store.save(user_id, memories)
-
-    async def extract_memories(
-        self,
-        messages: list[ChatMessage],
-        assistant_reply: str,
-    ) -> list[MemoryWrite]:
-        return []
+        await self.store.save_conversation(user_id, messages, assistant_reply)
 
 
 @lru_cache
 def get_memory_service() -> MemoryService:
-    return MemoryService()
+    return MemoryService(store=create_memory_store())
+
+
+def create_memory_store() -> MemoryStore:
+    if not settings.supabase_db_connection_string:
+        raise ValueError("SUPABASE_DB_CONNECTION_STRING is required.")
+
+    if not settings.openai_api_key:
+        raise ValueError("OPENAI_API_KEY is required.")
+
+    from app.memory.mem0_client import create_mem0_client
+    from app.memory.mem0_store import Mem0MemoryStore
+
+    return Mem0MemoryStore(
+        client=create_mem0_client(
+            db_connection_string=settings.supabase_db_connection_string,
+            openai_api_key=settings.openai_api_key,
+            memory_llm_model=settings.memory_llm_model,
+            embedder_model=settings.embedder_model,
+        )
+    )

@@ -5,8 +5,3 @@ from dataclasses import dataclass
 class Memory:
     content: str
     score: float | None = None
-
-
-@dataclass(frozen=True)
-class MemoryWrite:
-    content: str

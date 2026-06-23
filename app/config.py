@@ -13,6 +13,10 @@ class Settings(BaseSettings):
     llm_model: str = "llama-3.3-70b-versatile"
     memory_top_k: int = 5
     memory_cache_ttl_seconds: int = 300
+    supabase_db_connection_string: str = ""
+    openai_api_key: str = ""
+    embedder_model: str = "text-embedding-3-small"
+    memory_llm_model: str = "gpt-4.1-mini"
 
     model_config = SettingsConfigDict(
         env_file=".env",

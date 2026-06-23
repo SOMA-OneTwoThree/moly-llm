@@ -6,8 +6,9 @@ from unittest.mock import patch
 from app.chat.service import ChatService
 from app.chat.prompt_builder import PromptBuilder
 from app.main import app
+from app.memory.mem0_store import Mem0MemoryStore, memory_from_result
 from app.memory.models import Memory
-from app.memory.service import MemoryService
+from app.memory.service import MemoryService, create_memory_store
 from app.schemas.chat import ChatMessage, ChatRequest
 
 
@@ -31,7 +32,7 @@ class FakeMemoryStore:
         self.search_calls += 1
         return [Memory(content="User likes concise answers.", score=0.9)]
 
-    async def save(self, user_id, memories):
+    async def save_conversation(self, user_id, messages, assistant_reply):
         return None
 
 
@@ -41,6 +42,19 @@ class FakeMemoryService:
 
     async def remember_from_conversation(self, user_id, messages, assistant_reply):
         return None
+
+
+class FakeMem0Client:
+    def __init__(self):
+        self.search_args = None
+        self.add_args = []
+
+    def search(self, query, user_id, limit):
+        self.search_args = (query, user_id, limit)
+        return [{"memory": "User likes concise answers.", "score": 0.9}]
+
+    def add(self, memory, user_id):
+        self.add_args.append((memory, user_id))
 
 
 async def collect_stream(stream):
@@ -106,7 +120,10 @@ class ChatSseTests(unittest.TestCase):
     def test_chat_streams_llm_sse_events(self):
         fake_llm_provider = FakeLLMProvider()
 
-        with patch("app.api.chat.create_llm_provider", return_value=fake_llm_provider):
+        with (
+            patch("app.api.chat.create_llm_provider", return_value=fake_llm_provider),
+            patch("app.api.chat.get_memory_service", return_value=FakeMemoryService()),
+        ):
             headers, body = asyncio.run(post_chat())
 
         self.assertEqual(headers["content-type"], "text/event-stream")
@@ -117,7 +134,8 @@ class ChatSseTests(unittest.TestCase):
             body,
         )
         self.assertEqual(fake_llm_provider.messages[0]["role"], "system")
-        self.assertEqual(fake_llm_provider.messages[1]["role"], "user")
+        self.assertEqual(fake_llm_provider.messages[1]["role"], "system")
+        self.assertEqual(fake_llm_provider.messages[2]["role"], "user")
 
     def test_chat_service_adds_memory_to_prompt(self):
         fake_llm_provider = FakeLLMProvider()
@@ -144,6 +162,14 @@ class ChatSseTests(unittest.TestCase):
 
 
 class MemoryServiceTests(unittest.TestCase):
+    def test_memory_service_requires_store(self):
+        with self.assertRaisesRegex(ValueError, "MemoryService requires a MemoryStore"):
+            MemoryService()
+
+    def test_create_memory_store_requires_supabase(self):
+        with self.assertRaisesRegex(ValueError, "SUPABASE_DB_CONNECTION_STRING"):
+            create_memory_store()
+
     def test_search_uses_cache(self):
         store = FakeMemoryStore()
         service = MemoryService(store=store, top_k=5, cache_ttl_seconds=60)
@@ -153,6 +179,49 @@ class MemoryServiceTests(unittest.TestCase):
 
         self.assertEqual(first, second)
         self.assertEqual(store.search_calls, 1)
+
+    def test_mem0_store_searches_memories(self):
+        client = FakeMem0Client()
+        store = Mem0MemoryStore(client)
+
+        memories = asyncio.run(store.search("user-1", "hello", limit=5))
+
+        self.assertEqual(
+            memories,
+            [Memory(content="User likes concise answers.", score=0.9)],
+        )
+        self.assertEqual(client.search_args, ("hello", "user-1", 5))
+
+    def test_mem0_store_saves_conversation_once(self):
+        client = FakeMem0Client()
+        store = Mem0MemoryStore(client)
+
+        asyncio.run(
+            store.save_conversation(
+                "user-1",
+                [ChatMessage(role="user", content="hello")],
+                "hi",
+            )
+        )
+
+        self.assertEqual(
+            client.add_args,
+            [
+                (
+                    [
+                        {"role": "user", "content": "hello"},
+                        {"role": "assistant", "content": "hi"},
+                    ],
+                    "user-1",
+                )
+            ],
+        )
+
+    def test_memory_from_result_accepts_mem0_shapes(self):
+        self.assertEqual(
+            memory_from_result({"memory": "hello", "score": 0.9}),
+            Memory(content="hello", score=0.9),
+        )
 
 
 class PromptBuilderTests(unittest.TestCase):
