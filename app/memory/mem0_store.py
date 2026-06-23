@@ -8,7 +8,11 @@ class Mem0MemoryStore(MemoryStore):
         self.client = client
 
     async def search(self, user_id: str, query: str, limit: int) -> list[Memory]:
-        results = self.client.search(query, user_id=user_id, limit=limit)
+        results = await self.client.search(
+            query,
+            filters={"user_id": user_id},
+            top_k=limit,
+        )
         if isinstance(results, dict):
             results = results.get("results", [])
 
@@ -28,7 +32,7 @@ class Mem0MemoryStore(MemoryStore):
             conversation.append({"role": "assistant", "content": assistant_reply})
 
         if conversation:
-            self.client.add(conversation, user_id=user_id)
+            await self.client.add(conversation, user_id=user_id)
 
 
 def memory_from_result(result) -> Memory:

@@ -61,11 +61,11 @@ class FakeMem0Client:
         self.search_args = None
         self.add_args = []
 
-    def search(self, query, user_id, limit):
-        self.search_args = (query, user_id, limit)
+    async def search(self, query, filters, top_k):
+        self.search_args = (query, filters, top_k)
         return [{"memory": "User likes concise answers.", "score": 0.9}]
 
-    def add(self, memory, user_id):
+    async def add(self, memory, user_id):
         self.add_args.append((memory, user_id))
 
 
@@ -289,7 +289,7 @@ class MemoryServiceTests(unittest.TestCase):
             memories,
             [Memory(content="User likes concise answers.", score=0.9)],
         )
-        self.assertEqual(client.search_args, ("hello", "user-1", 5))
+        self.assertEqual(client.search_args, ("hello", {"user_id": "user-1"}, 5))
 
     def test_mem0_store_saves_conversation_once(self):
         client = FakeMem0Client()

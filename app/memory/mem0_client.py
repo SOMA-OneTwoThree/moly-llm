@@ -4,9 +4,9 @@ def create_mem0_client(
     memory_llm_model: str,
     embedder_model: str,
 ):
-    from mem0 import Memory
+    from mem0 import AsyncMemory
 
-    return Memory.from_config(
+    return AsyncMemory.from_config(
         {
             "vector_store": {
                 "provider": "supabase",
