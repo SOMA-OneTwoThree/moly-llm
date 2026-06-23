@@ -3,9 +3,12 @@ import json
 import unittest
 from unittest.mock import patch
 
+from app.chat.service import ChatService
 from app.chat.prompt_builder import PromptBuilder
 from app.main import app
-from app.schemas.chat import ChatMessage
+from app.memory.models import Memory
+from app.memory.service import MemoryService
+from app.schemas.chat import ChatMessage, ChatRequest
 
 
 class FakeLLMProvider:
@@ -18,6 +21,30 @@ class FakeLLMProvider:
         self.messages = messages
         yield "안녕하세요. "
         yield "저는 Moly예요."
+
+
+class FakeMemoryStore:
+    def __init__(self):
+        self.search_calls = 0
+
+    async def search(self, user_id, query, limit):
+        self.search_calls += 1
+        return [Memory(content="User likes concise answers.", score=0.9)]
+
+    async def save(self, user_id, memories):
+        return None
+
+
+class FakeMemoryService:
+    async def search(self, user_id, query):
+        return [Memory(content="User likes concise answers.")]
+
+    async def remember_from_conversation(self, user_id, messages, assistant_reply):
+        return None
+
+
+async def collect_stream(stream):
+    return [event async for event in stream]
 
 
 async def post_chat() -> tuple[dict[str, str], str]:
@@ -91,6 +118,41 @@ class ChatSseTests(unittest.TestCase):
         )
         self.assertEqual(fake_llm_provider.messages[0]["role"], "system")
         self.assertEqual(fake_llm_provider.messages[1]["role"], "user")
+
+    def test_chat_service_adds_memory_to_prompt(self):
+        fake_llm_provider = FakeLLMProvider()
+        service = ChatService(
+            llm_provider=fake_llm_provider,
+            memory_service=FakeMemoryService(),
+            prompt_builder=PromptBuilder(system_prompt="You are Molly."),
+        )
+        request = ChatRequest(
+            user_id="user-1",
+            messages=[ChatMessage(role="user", content="hello")],
+        )
+
+        asyncio.run(collect_stream(service.stream_chat(request)))
+
+        self.assertEqual(
+            fake_llm_provider.messages[1],
+            {
+                "role": "system",
+                "content": "Relevant user memory:\n- User likes concise answers.",
+            },
+        )
+        self.assertEqual(fake_llm_provider.messages[2]["role"], "user")
+
+
+class MemoryServiceTests(unittest.TestCase):
+    def test_search_uses_cache(self):
+        store = FakeMemoryStore()
+        service = MemoryService(store=store, top_k=5, cache_ttl_seconds=60)
+
+        first = asyncio.run(service.search("user-1", "hello"))
+        second = asyncio.run(service.search("user-1", "hello"))
+
+        self.assertEqual(first, second)
+        self.assertEqual(store.search_calls, 1)
 
 
 class PromptBuilderTests(unittest.TestCase):

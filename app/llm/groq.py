@@ -1,7 +1,5 @@
 from collections.abc import AsyncIterator
 
-from openai import AsyncOpenAI
-
 from app.llm.base import LLMMessage, StreamingLLMProvider
 
 
@@ -9,6 +7,8 @@ class GroqStreamingLLMProvider(StreamingLLMProvider):
     BASE_URL = "https://api.groq.com/openai/v1"
 
     def __init__(self, api_key: str, model: str) -> None:
+        from openai import AsyncOpenAI
+
         self.model = model
         self.client = AsyncOpenAI(api_key=api_key, base_url=self.BASE_URL)
 
