@@ -1,16 +1,19 @@
 import asyncio
 import json
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
-from app.chat.service import ChatService
 from app.chat.prompt_builder import PromptBuilder
+from app.chat.service import ChatService
 from app.config import settings
 from app.main import app
 from app.memory.mem0_store import Mem0MemoryStore, memory_from_result
 from app.memory.models import Memory
 from app.memory.service import MemoryService, create_memory_store
 from app.schemas.chat import ChatMessage, ChatRequest
+
+NOW = datetime(2026, 6, 25, 12, 0, tzinfo=timezone.utc)
 
 
 class FakeLLMProvider:
@@ -26,45 +29,26 @@ class FakeLLMProvider:
 
 
 class FakeMemoryStore:
-    def __init__(self):
-        self.search_calls = 0
+    """새 포트(get_all/add) 스텁 — DB 없이."""
 
-    async def search(self, user_id, query, limit):
-        self.search_calls += 1
-        return [Memory(content="User likes concise answers.", score=0.9)]
+    def __init__(self, memories=None):
+        self._memories = memories or []
+        self.add_calls = []
 
-    async def save_conversation(self, user_id, messages, assistant_reply):
-        return None
+    async def get_all(self, user_id, limit):
+        return self._memories
 
-
-class FakeMemoryService:
-    def __init__(self):
-        self.remember_calls = []
-
-    async def search(self, user_id, query):
-        return [Memory(content="User likes concise answers.")]
-
-    async def remember_from_conversation(self, user_id, messages, assistant_reply):
-        self.remember_calls.append((user_id, messages, assistant_reply))
-        return None
-
-
-class FakeBackgroundTasks:
-    def __init__(self):
-        self.tasks = []
-
-    def add_task(self, func, *args, **kwargs):
-        self.tasks.append((func, args, kwargs))
+    async def add(self, user_id, messages):
+        self.add_calls.append((user_id, messages))
 
 
 class FakeMem0Client:
-    def __init__(self):
-        self.search_args = None
+    def __init__(self, get_all_result=None):
+        self._get_all_result = get_all_result or {"results": []}
         self.add_args = []
 
-    async def search(self, query, filters, top_k):
-        self.search_args = (query, filters, top_k)
-        return [{"memory": "User likes concise answers.", "score": 0.9}]
+    async def get_all(self, filters, top_k):
+        return self._get_all_result
 
     async def add(self, memory, user_id):
         self.add_args.append((memory, user_id))
@@ -74,13 +58,8 @@ async def collect_stream(stream):
     return [event async for event in stream]
 
 
-async def post_chat() -> tuple[dict[str, str], str]:
-    body = json.dumps(
-        {
-            "user_id": "user-1",
-            "messages": [{"role": "user", "content": "hello"}],
-        }
-    ).encode()
+async def post_chat(body_dict) -> tuple[dict[str, str], str]:
+    body = json.dumps(body_dict).encode()
     messages = [{"type": "http.request", "body": body, "more_body": False}]
     sent = []
 
@@ -114,155 +93,76 @@ async def post_chat() -> tuple[dict[str, str], str]:
         send,
     )
 
-    response_start = next(
-        message for message in sent if message["type"] == "http.response.start"
-    )
-    headers = {
-        key.decode().lower(): value.decode()
-        for key, value in response_start["headers"]
-    }
+    response_start = next(m for m in sent if m["type"] == "http.response.start")
+    headers = {k.decode().lower(): v.decode() for k, v in response_start["headers"]}
     response_body = b"".join(
-        message.get("body", b"")
-        for message in sent
-        if message["type"] == "http.response.body"
+        m.get("body", b"") for m in sent if m["type"] == "http.response.body"
     ).decode()
     return headers, response_body
 
 
 class ChatSseTests(unittest.TestCase):
-    def test_chat_streams_llm_sse_events(self):
-        fake_llm_provider = FakeLLMProvider()
-
-        with (
-            patch("app.api.chat.create_llm_provider", return_value=fake_llm_provider),
-            patch("app.api.chat.get_memory_service", return_value=FakeMemoryService()),
-        ):
-            headers, body = asyncio.run(post_chat())
+    def test_chat_streams_sse_and_forwards_memory(self):
+        fake_llm = FakeLLMProvider()
+        with patch("app.api.chat.create_llm_provider", return_value=fake_llm):
+            headers, body = asyncio.run(
+                post_chat(
+                    {
+                        "user_id": "user-1",
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "memory": "- likes coffee",
+                    }
+                )
+            )
 
         self.assertEqual(headers["content-type"], "text/event-stream")
         self.assertIn('data: {"type":"delta","delta":"안녕하세요. "}\n\n', body)
-        self.assertIn('data: {"type":"delta","delta":"저는 Moly예요."}\n\n', body)
         self.assertIn(
             'data: {"type":"done","reply":"안녕하세요. 저는 Moly예요.","usage":{"model":"test-model"}}\n\n',
             body,
         )
-        self.assertEqual(fake_llm_provider.messages[0]["role"], "system")
-        self.assertEqual(fake_llm_provider.messages[1]["role"], "system")
-        self.assertEqual(fake_llm_provider.messages[2]["role"], "user")
+        # 요청의 memory가 system 블록으로 들어갔는지 (mem0 호출 없이)
+        roles = [m["role"] for m in fake_llm.messages]
+        self.assertEqual(roles, ["system", "system", "user"])
+        self.assertIn("likes coffee", fake_llm.messages[1]["content"])
 
-    def test_chat_service_adds_memory_to_prompt(self):
-        fake_llm_provider = FakeLLMProvider()
+
+class ChatServiceTests(unittest.TestCase):
+    def test_uses_request_memory_no_mem0_call(self):
+        fake_llm = FakeLLMProvider()
         service = ChatService(
-            llm_provider=fake_llm_provider,
-            memory_service=FakeMemoryService(),
-            prompt_builder=PromptBuilder(system_prompt="You are Molly."),
+            llm_provider=fake_llm,
+            prompt_builder=PromptBuilder(system_prompt="You are Moly."),
         )
         request = ChatRequest(
             user_id="user-1",
-            messages=[ChatMessage(role="user", content="hello")],
+            messages=[ChatMessage(role="user", content="hi")],
+            memory="- from Busan",
         )
-
         asyncio.run(collect_stream(service.stream_chat(request)))
 
         self.assertEqual(
-            fake_llm_provider.messages[1],
-            {
-                "role": "system",
-                "content": "Relevant user memory:\n- User likes concise answers.",
-            },
+            fake_llm.messages[1],
+            {"role": "system", "content": "Relevant user memory:\n- from Busan"},
         )
-        self.assertEqual(fake_llm_provider.messages[2]["role"], "user")
 
-    def test_chat_service_saves_memory_every_n_user_turns(self):
-        fake_llm_provider = FakeLLMProvider()
-        fake_memory_service = FakeMemoryService()
-        background_tasks = FakeBackgroundTasks()
+    def test_empty_memory_omits_memory_block(self):
+        fake_llm = FakeLLMProvider()
         service = ChatService(
-            llm_provider=fake_llm_provider,
-            memory_service=fake_memory_service,
-            prompt_builder=PromptBuilder(system_prompt="You are Molly."),
-            memory_save_every_n_turns=2,
+            llm_provider=fake_llm,
+            prompt_builder=PromptBuilder(system_prompt="You are Moly."),
         )
         request = ChatRequest(
-            user_id="user-1",
-            messages=[
-                ChatMessage(role="user", content="hello"),
-                ChatMessage(role="assistant", content="hi"),
-                ChatMessage(role="user", content="remember this"),
-            ],
+            user_id="user-1", messages=[ChatMessage(role="user", content="hi")]
         )
+        asyncio.run(collect_stream(service.stream_chat(request)))
 
-        asyncio.run(collect_stream(service.stream_chat(request, background_tasks)))
-
-        self.assertEqual(len(background_tasks.tasks), 1)
-        _, _, kwargs = background_tasks.tasks[0]
-        self.assertEqual(kwargs["user_id"], "user-1")
-        self.assertEqual(
-            kwargs["messages"],
-            [
-                ChatMessage(role="user", content="hello"),
-                ChatMessage(role="assistant", content="hi"),
-                ChatMessage(role="user", content="remember this"),
-            ],
-        )
-        self.assertEqual(kwargs["assistant_reply"], "안녕하세요. 저는 Moly예요.")
-
-    def test_chat_service_skips_memory_save_between_intervals(self):
-        fake_llm_provider = FakeLLMProvider()
-        fake_memory_service = FakeMemoryService()
-        background_tasks = FakeBackgroundTasks()
-        service = ChatService(
-            llm_provider=fake_llm_provider,
-            memory_service=fake_memory_service,
-            prompt_builder=PromptBuilder(system_prompt="You are Molly."),
-            memory_save_every_n_turns=2,
-        )
-        request = ChatRequest(
-            user_id="user-1",
-            messages=[ChatMessage(role="user", content="hello")],
-        )
-
-        asyncio.run(collect_stream(service.stream_chat(request, background_tasks)))
-
-        self.assertEqual(background_tasks.tasks, [])
-
-    def test_chat_service_saves_only_recent_n_user_turns(self):
-        fake_llm_provider = FakeLLMProvider()
-        background_tasks = FakeBackgroundTasks()
-        service = ChatService(
-            llm_provider=fake_llm_provider,
-            memory_service=FakeMemoryService(),
-            prompt_builder=PromptBuilder(system_prompt="You are Molly."),
-            memory_save_every_n_turns=2,
-        )
-        request = ChatRequest(
-            user_id="user-1",
-            messages=[
-                ChatMessage(role="user", content="old user"),
-                ChatMessage(role="assistant", content="old assistant"),
-                ChatMessage(role="user", content="new user"),
-                ChatMessage(role="assistant", content="new assistant"),
-                ChatMessage(role="user", content="latest user"),
-                ChatMessage(role="assistant", content="latest assistant"),
-                ChatMessage(role="user", content="final user"),
-            ],
-        )
-
-        asyncio.run(collect_stream(service.stream_chat(request, background_tasks)))
-
-        _, _, kwargs = background_tasks.tasks[0]
-        self.assertEqual(
-            kwargs["messages"],
-            [
-                ChatMessage(role="user", content="latest user"),
-                ChatMessage(role="assistant", content="latest assistant"),
-                ChatMessage(role="user", content="final user"),
-            ],
-        )
+        # memory 비면 system 1개 + user 1개뿐
+        self.assertEqual([m["role"] for m in fake_llm.messages], ["system", "user"])
 
 
 class MemoryServiceTests(unittest.TestCase):
-    def test_memory_service_requires_store(self):
+    def test_requires_store(self):
         with self.assertRaisesRegex(ValueError, "MemoryService requires a MemoryStore"):
             MemoryService()
 
@@ -273,54 +173,67 @@ class MemoryServiceTests(unittest.TestCase):
         ):
             create_memory_store()
 
-    def test_search_uses_cache(self):
-        store = FakeMemoryStore()
-        service = MemoryService(store=store, top_k=5, cache_ttl_seconds=60)
-
-        first = asyncio.run(service.search("user-1", "hello"))
-        second = asyncio.run(service.search("user-1", "hello"))
-
-        self.assertEqual(first, second)
-        self.assertEqual(store.search_calls, 1)
-
-    def test_mem0_store_searches_memories(self):
-        client = FakeMem0Client()
-        store = Mem0MemoryStore(client)
-
-        memories = asyncio.run(store.search("user-1", "hello", limit=5))
-
-        self.assertEqual(
-            memories,
-            [Memory(content="User likes concise answers.", score=0.9)],
+    def test_load_for_session_renders_active_and_passive(self):
+        store = FakeMemoryStore(
+            memories=[
+                Memory(content="took an exam", created_at=NOW - timedelta(days=1)),
+                Memory(content="from Busan", created_at=NOW - timedelta(days=40)),
+            ]
         )
-        self.assertEqual(client.search_args, ("hello", {"user_id": "user-1"}, 5))
+        service = MemoryService(store=store)
 
-    def test_mem0_store_saves_conversation_once(self):
+        text = asyncio.run(service.load_for_session("user-1", now=NOW))
+
+        self.assertIn("[Recent", text)
+        self.assertIn("- yesterday: took an exam", text)
+        self.assertIn("[Background", text)
+        self.assertIn("- from Busan", text)
+
+    def test_commit_session_calls_store_add(self):
+        store = FakeMemoryStore()
+        service = MemoryService(store=store)
+        msgs = [ChatMessage(role="user", content="hi")]
+
+        asyncio.run(service.commit_session("user-1", msgs))
+
+        self.assertEqual(store.add_calls, [("user-1", msgs)])
+
+
+class Mem0StoreTests(unittest.TestCase):
+    def test_get_all_maps_timestamps_and_id(self):
+        client = FakeMem0Client(
+            get_all_result={
+                "results": [
+                    {
+                        "id": "m1",
+                        "memory": "likes coffee",
+                        "created_at": "2026-06-20T00:00:00+00:00",
+                        "updated_at": "2026-06-24T00:00:00+00:00",
+                    }
+                ]
+            }
+        )
+        memories = asyncio.run(Mem0MemoryStore(client).get_all("user-1", limit=500))
+
+        self.assertEqual(len(memories), 1)
+        m = memories[0]
+        self.assertEqual(m.content, "likes coffee")
+        self.assertEqual(m.id, "m1")
+        self.assertEqual(m.updated_at, datetime(2026, 6, 24, tzinfo=timezone.utc))
+
+    def test_add_passes_conversation(self):
         client = FakeMem0Client()
-        store = Mem0MemoryStore(client)
-
         asyncio.run(
-            store.save_conversation(
-                "user-1",
-                [ChatMessage(role="user", content="hello")],
-                "hi",
+            Mem0MemoryStore(client).add(
+                "user-1", [ChatMessage(role="user", content="hello")]
             )
         )
-
         self.assertEqual(
-            client.add_args,
-            [
-                (
-                    [
-                        {"role": "user", "content": "hello"},
-                        {"role": "assistant", "content": "hi"},
-                    ],
-                    "user-1",
-                )
-            ],
+            client.add_args, [([{"role": "user", "content": "hello"}], "user-1")]
         )
 
-    def test_memory_from_result_accepts_mem0_shapes(self):
+    def test_memory_from_result_accepts_plain_and_dict(self):
+        self.assertEqual(memory_from_result("hi"), Memory(content="hi"))
         self.assertEqual(
             memory_from_result({"memory": "hello", "score": 0.9}),
             Memory(content="hello", score=0.9),
@@ -328,26 +241,21 @@ class MemoryServiceTests(unittest.TestCase):
 
 
 class PromptBuilderTests(unittest.TestCase):
-    def test_build_returns_system_memory_and_recent_messages(self):
-        builder = PromptBuilder(system_prompt="You are Molly.")
-
+    def test_build_returns_system_memory_and_messages(self):
+        builder = PromptBuilder(system_prompt="You are Moly.")
         messages = builder.build(
-            messages=[
-                ChatMessage(role="user", content="hello"),
-                ChatMessage(role="assistant", content="hi"),
-            ],
-            memory="User likes concise answers.",
+            messages=[ChatMessage(role="user", content="hello")],
+            memory="likes coffee",
         )
-
         self.assertEqual(
             messages,
             [
-                {"role": "system", "content": "You are Molly."},
-                {
-                    "role": "system",
-                    "content": "Relevant user memory:\nUser likes concise answers.",
-                },
+                {"role": "system", "content": "You are Moly."},
+                {"role": "system", "content": "Relevant user memory:\nlikes coffee"},
                 {"role": "user", "content": "hello"},
-                {"role": "assistant", "content": "hi"},
             ],
         )
+
+
+if __name__ == "__main__":
+    unittest.main()
