@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-sonnet-4-6"
     llm_max_tokens: int = 1024  # 컴패니언 응답은 짧음(음성 1~3문장)
+    # 교정(/feedback) — 비스트리밍 1회 + 구조화 출력. 품질 위해 Sonnet/Opus.
+    feedback_model: str = "claude-sonnet-4-6"
+    feedback_max_tokens: int = 2000
     groq_api_key: str = ""
     llm_model: str = "llama-3.3-70b-versatile"  # groq 사용 시
     # mem0(장기기억) — 데이터는 우리 Supabase, 추출/임베딩은 OpenAI
