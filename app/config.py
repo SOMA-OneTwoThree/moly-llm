@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     feedback_max_tokens: int = 2000
     groq_api_key: str = ""
     llm_model: str = "llama-3.3-70b-versatile"  # groq 사용 시
+    # 내부 호출 보호용 공유 시크릿(게이트웨이만 호출). 비어있으면 미강제(로컬).
+    # 게이트웨이 INTERNAL_SERVICE_TOKEN과 동일값(Parameter Store).
+    internal_service_token: str = ""
     # mem0(장기기억) — 데이터는 우리 Supabase, 추출/임베딩은 OpenAI
     supabase_db_connection_string: str = ""
     openai_api_key: str = ""
