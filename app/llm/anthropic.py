@@ -10,6 +10,26 @@ from collections.abc import AsyncIterator
 from app.llm.base import LLMMessage, StreamingLLMProvider
 
 
+def _split_system_and_convo(messages: list[LLMMessage]) -> tuple[str, list[dict]]:
+    """messages를 (system 텍스트, user/assistant convo)로 분리.
+
+    system은 top-level로 합치고, convo는 user/assistant만 남긴다. Anthropic은 첫 메시지가
+    user여야 하므로 선발화(AI 먼저 인사)·재연결로 history가 assistant로 시작하면 선행
+    non-user 메시지를 방어적으로 절단한다.
+    """
+    system = "\n\n".join(
+        m["content"] for m in messages if m["role"] == "system" and m["content"]
+    ).strip()
+    convo = [
+        {"role": m["role"], "content": m["content"]}
+        for m in messages
+        if m["role"] in ("user", "assistant")
+    ]
+    while convo and convo[0]["role"] != "user":
+        convo.pop(0)
+    return system, convo
+
+
 class AnthropicStreamingLLMProvider(StreamingLLMProvider):
     def __init__(self, api_key: str, model: str, max_tokens: int = 1024) -> None:
         from anthropic import AsyncAnthropic
@@ -19,15 +39,8 @@ class AnthropicStreamingLLMProvider(StreamingLLMProvider):
         self.client = AsyncAnthropic(api_key=api_key)
 
     async def stream_chat(self, messages: list[LLMMessage]) -> AsyncIterator[str]:
-        # system 메시지(들)는 top-level system으로, 나머지(user/assistant)만 messages로.
-        system = "\n\n".join(
-            m["content"] for m in messages if m["role"] == "system" and m["content"]
-        ).strip()
-        convo = [
-            {"role": m["role"], "content": m["content"]}
-            for m in messages
-            if m["role"] in ("user", "assistant")
-        ]
+        # system은 top-level로, user/assistant만 convo로(첫 메시지 user 보장은 헬퍼가 처리).
+        system, convo = _split_system_and_convo(messages)
 
         kwargs: dict = {
             "model": self.model,
