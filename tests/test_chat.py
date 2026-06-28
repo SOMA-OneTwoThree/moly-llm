@@ -257,5 +257,47 @@ class PromptBuilderTests(unittest.TestCase):
         )
 
 
+class AnthropicConvoTests(unittest.TestCase):
+    """_split_system_and_convo: system 분리 + 첫 메시지 user 보장(선발화/재연결 대비)."""
+
+    def setUp(self):
+        from app.llm.anthropic import _split_system_and_convo
+        self.split = _split_system_and_convo
+
+    def test_splits_system_and_keeps_convo(self):
+        system, convo = self.split([
+            {"role": "system", "content": "You are Moly."},
+            {"role": "user", "content": "a"},
+            {"role": "assistant", "content": "b"},
+        ])
+        self.assertEqual(system, "You are Moly.")
+        self.assertEqual(convo, [{"role": "user", "content": "a"},
+                                 {"role": "assistant", "content": "b"}])
+
+    def test_drops_leading_assistant(self):
+        # 선발화로 history가 assistant 인사로 시작 → Anthropic 거부 방지 위해 절단.
+        _, convo = self.split([
+            {"role": "assistant", "content": "hey there"},
+            {"role": "user", "content": "hi"},
+        ])
+        self.assertEqual(convo, [{"role": "user", "content": "hi"}])
+
+    def test_all_assistant_yields_empty_convo(self):
+        _, convo = self.split([{"role": "assistant", "content": "x"}])
+        self.assertEqual(convo, [])
+
+
+class PromptMemoryHeaderSyncTests(unittest.TestCase):
+    """시스템 프롬프트 [What You Remember]가 참조하는 ACTIVE/PASSIVE 헤더가 renderer 상수와
+    정확히 일치하는지 — 한쪽만 바뀌면 프롬프트의 메모리 사용 지침이 조용히 깨지므로 불변식으로 고정."""
+
+    def test_prompt_references_renderer_headers(self):
+        from app.chat.prompts import DEFAULT_SYSTEM_PROMPT
+        from app.memory.renderer import _ACTIVE_HEADER, _PASSIVE_HEADER
+
+        self.assertIn(_ACTIVE_HEADER, DEFAULT_SYSTEM_PROMPT)
+        self.assertIn(_PASSIVE_HEADER, DEFAULT_SYSTEM_PROMPT)
+
+
 if __name__ == "__main__":
     unittest.main()
