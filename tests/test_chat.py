@@ -287,5 +287,17 @@ class AnthropicConvoTests(unittest.TestCase):
         self.assertEqual(convo, [])
 
 
+class PromptMemoryHeaderSyncTests(unittest.TestCase):
+    """시스템 프롬프트 [What You Remember]가 참조하는 ACTIVE/PASSIVE 헤더가 renderer 상수와
+    정확히 일치하는지 — 한쪽만 바뀌면 프롬프트의 메모리 사용 지침이 조용히 깨지므로 불변식으로 고정."""
+
+    def test_prompt_references_renderer_headers(self):
+        from app.chat.prompts import DEFAULT_SYSTEM_PROMPT
+        from app.memory.renderer import _ACTIVE_HEADER, _PASSIVE_HEADER
+
+        self.assertIn(_ACTIVE_HEADER, DEFAULT_SYSTEM_PROMPT)
+        self.assertIn(_PASSIVE_HEADER, DEFAULT_SYSTEM_PROMPT)
+
+
 if __name__ == "__main__":
     unittest.main()
