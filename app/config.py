@@ -1,4 +1,11 @@
+import os
 from functools import lru_cache
+
+# mem0 텔레메트리(phone-home) 비활성 — mem0 get_all/add는 매 호출 capture_event/notice로
+# 외부 분석 엔드포인트에 네트워크 호출을 한다. 이게 세션시작 load의 간헐적 지연(ReadTimeout)
+# 주요 원인. mem0 임포트 전에 env로 꺼야 적용됨(telemetry 모듈이 임포트 시 1회 읽음).
+# infra가 명시 설정하면 그 값 우선(setdefault).
+os.environ.setdefault("MEM0_TELEMETRY", "False")
 
 from pydantic import BaseModel
 from pydantic_settings import BaseSettings, SettingsConfigDict

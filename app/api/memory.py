@@ -1,4 +1,5 @@
 import logging
+import time
 
 from fastapi import APIRouter, HTTPException
 
@@ -18,7 +19,11 @@ _log = logging.getLogger("moly-llm")
 async def load_memory(request: MemoryLoadRequest) -> MemoryLoadResponse:
     """세션시작: 사용자 장기기억 로드·랭킹·렌더 → 텍스트."""
     service = get_memory_service()
+    t0 = time.monotonic()
     memory_text = await service.load_for_session(request.user_id)
+    # 로드 소요시간 로깅 — 게이트웨이 타임아웃(간헐 ReadTimeout) 원인 추적용(mem0/Supabase 지연 가시화).
+    _log.info("memory load %dms (chars=%d)",
+              int((time.monotonic() - t0) * 1000), len(memory_text))
     return MemoryLoadResponse(memory_text=memory_text)
 
 
