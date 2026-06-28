@@ -1,4 +1,11 @@
+import logging
+
 from fastapi import Depends, FastAPI
+
+# 앱 로거 INFO 출력 — uvicorn 기본은 app 로거(moly-llm)를 INFO로 안 띄워 _log.info가 묻힌다.
+# 메모리 로드 소요시간 등 진단 로그가 컨테이너 stdout에 찍히게 한다.
+logging.basicConfig(level=logging.INFO)
+logging.getLogger("moly-llm").setLevel(logging.INFO)
 
 from app.api.chat import router as chat_router
 from app.api.deps import verify_internal_token
